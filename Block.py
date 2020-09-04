@@ -50,11 +50,16 @@ class CARLABlock:
         self.ego_vehicle = self.vehicles_[self.get_property('ego_vehicle')]
         self.weather_presets = [carla.WeatherParameters.ClearNoon, carla.WeatherParameters.CloudyNoon, carla.WeatherParameters.WetNoon, carla.WeatherParameters.WetCloudyNoon, carla.WeatherParameters.SoftRainNoon, carla.WeatherParameters.MidRainyNoon, carla.WeatherParameters.HardRainNoon,
                                 carla.WeatherParameters.ClearSunset, carla.WeatherParameters.CloudySunset, carla.WeatherParameters.WetSunset, carla.WeatherParameters.WetCloudySunset, carla.WeatherParameters.SoftRainSunset, carla.WeatherParameters.MidRainSunset, carla.WeatherParameters.HardRainSunset]
+        self.quality_level_ = ['Epic', 'Low']
+        self.selected_quality_ = self.quality_level_[
+            self.get_property('quality_level')]
+        self.alert("Quality Level is: {}".format(
+            self.selected_quality_), "INFO")
         # Now we will run carla as a server by the user carla, as carla only runs by non-root user
         # we will use opengl not vulkan for headless mode an pass the selected town as an argument to carla
         time.sleep(5)
         self.pro = subprocess.Popen(
-            "runuser -l carla -c 'SDL_VIDEODRIVER=offscreen sh /opt/carla-simulator/bin/CarlaUE4.sh {} -opengl -carla-server'".format(self.selected_town), shell=True)
+            "runuser -l carla -c 'SDL_VIDEODRIVER=offscreen sh /opt/carla-simulator/bin/CarlaUE4.sh {} -quality-level={} -opengl -carla-server'".format(self.selected_town, self.selected_quality_), shell=True)
         self.alert("Starting CARLA", "INFO")
         time.sleep(10)  # give CARLA server time to start
 
@@ -113,13 +118,21 @@ class CARLABlock:
         # Let's add now a "rgb" camera attached to the vehicle. Note that the
         # transform we give here is now relative to the vehicle.
         camera_bp = blueprint_library.find('sensor.camera.rgb')
-        camera_transform = carla.Transform(carla.Location(x=1.5, z=2.4))
+        camera_transform = carla.Transform(
+            carla.Location(x=1.5, z=2.4))
         camera = world.spawn_actor(
             camera_bp, camera_transform, attach_to=self.vehicle)
         actor_list.append(camera)
         print('created %s' % camera.type_id)
-        camera.listen(self.publish_bgr_image)
-
+        camera.listen(self._publish_bgr_image)
+        # Create Bird-Eye view camera of the simulation
+        camera_transform_bird_eye = carla.Transform(
+            carla.Location(x=0, z=10), carla.Rotation(pitch=-90))
+        camera_bird_eye = world.spawn_actor(
+            camera_bp, camera_transform_bird_eye, attach_to=self.vehicle)
+        actor_list.append(camera_bird_eye)
+        print('created %s' % camera_bird_eye.type_id)
+        camera_bird_eye.listen(self.__bird_eye_image)
         # Let's add now a "semantic" camera attached to the vehicle. Note that the
         # transform we give here is now relative to the vehicle.
         camera_ss_bp = blueprint_library.find(
@@ -128,7 +141,7 @@ class CARLABlock:
             camera_ss_bp, camera_transform, attach_to=self.vehicle)
         actor_list.append(camera_ss)
         print('created %s' % camera_ss.type_id)
-        camera_ss.listen(self.publish_semantic_seg)
+        camera_ss.listen(self._publish_semantic_seg)
 
         # Let's add now a "lidar" attached to the vehicle. Note that the
         # transform we give here is now relative to the vehicle.
@@ -143,7 +156,7 @@ class CARLABlock:
             lidar_bp, lidar_transform, attach_to=self.vehicle)
         actor_list.append(lidar)
         print('created %s' % lidar.type_id)
-        lidar.listen(self.sensor_data_updated)
+        lidar.listen(self._publish_pointcloud)
 
         # Let's add now a "gnss" attached to the vehicle. Note that the
         # transform we give here is now relative to the vehicle.
@@ -153,7 +166,7 @@ class CARLABlock:
             gnss_bp, gnss_transform, attach_to=self.vehicle)
         actor_list.append(gnss)
         print('created %s' % gnss.type_id)
-        gnss.listen(self.gnss_sensor_data_updated)
+        gnss.listen(self._publish_gnss)
 
         # Here we will use some examples script provided by CARLA to spawn actors and change weather
         if(self.spawn_persons > 0 or self.spawn_vehicles > 0):
@@ -171,7 +184,7 @@ class CARLABlock:
         print("SLeeping")
         time.sleep(15000000)
 
-    def publish_bgr_image(self, image):
+    def _publish_bgr_image(self, image, port_key="image"):
         """callback function to rgb camera sensor
         it converts the image to ROS image in BGR8 encoding
         """
@@ -181,9 +194,12 @@ class CARLABlock:
         header = Header()
         set_timestamp(header, image.timestamp)
         img_msg = from_ndarray(carla_image_data_array[:, :, :3], header)
-        self.publish("image", img_msg)
+        self.publish(port_key, img_msg)
 
-    def publish_semantic_seg(self, carla_image):
+    def __bird_eye_image(self, carla_image):
+        self._publish_bgr_image(carla_image, port_key="bird_eye")
+
+    def _publish_semantic_seg(self, carla_image):
         """callback function to semantic segmentation camera sensor
         it converts the image to ROS image in BGR8 encoding
         """
@@ -196,7 +212,7 @@ class CARLABlock:
         img_msg = from_ndarray(carla_image_data_array[:, :, :3], header)
         self.publish("image_seg", img_msg)
 
-    def sensor_data_updated(self, carla_lidar_measurement):
+    def _publish_pointcloud(self, carla_lidar_measurement):
         """
         Function to transform the a received lidar measurement into a ROS point cloud message
         :param carla_lidar_measurement: carla lidar measurement object
@@ -219,7 +235,7 @@ class CARLABlock:
         point_cloud_msg = create_cloud(header, fields, lidar_data)
         self.publish("lidar", point_cloud_msg)
 
-    def gnss_sensor_data_updated(self, carla_gnss_measurement):
+    def _publish_gnss(self, carla_gnss_measurement):
         """
         Function to transform a received gnss event into a ROS NavSatFix message
         :param carla_gnss_measurement: carla gnss measurement object
