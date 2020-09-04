@@ -2,9 +2,7 @@ import subprocess
 import os
 import time
 import glob
-import os
 import sys
-
 try:
     sys.path.append(glob.glob('/opt/carla-simulator/PythonAPI/carla/dist/carla-*%d.%d-%s.egg' % (
         sys.version_info.major,
@@ -12,16 +10,13 @@ try:
         'win-amd64' if os.name == 'nt' else 'linux-x86_64'))[0])
 except IndexError:
     pass
-
 import carla
-
 import random
 import time
 import numpy as np
+import rospy
 from yonoarc_utils.image import to_ndarray, from_ndarray
-from cv_bridge import CvBridge
-
-
+from yonoarc_utils.header import set_timestamp, get_timestamp
 from std_msgs.msg import Header
 from sensor_msgs.point_cloud2 import create_cloud
 from sensor_msgs.msg import PointField
@@ -40,14 +35,11 @@ class CARLABlock:
         os.environ["PASSWORD"] = "carla"
         # Run the ssh-server
         os.system("(mkdir /home/$USERNAME && useradd $USERNAME && echo $USERNAME:$PASSWORD | chpasswd && usermod -aG sudo $USERNAME && chown carla:carla /home/carla && usermod -d /home/carla carla && mkdir /var/run/sshd && /usr/sbin/sshd) & (rm -f /tmp/.X1-lock; sh /usr/local/bin/start_desktop.sh) &")
-        self.alert("Starting CARLA", "INFO")
+        # Let's get the Block properties and configure the the simulation
         self.carla_towns = ['Town01', 'Town02', 'Town03', 'Town04',
                             'Town05', 'Town06', 'Town07', 'Town10HD']
         self.selected_town = self.carla_towns[self.get_property('towns')]
         self.alert('Selected Town is {}'.format(self.selected_town), "INFO")
-        time.sleep(5)
-        self.pro = subprocess.Popen(
-            "runuser -l carla -c 'SDL_VIDEODRIVER=offscreen sh /opt/carla-simulator/bin/CarlaUE4.sh {} -opengl -carla-server'".format(self.selected_town), shell=True)
         self.spawn_persons = int(self.get_property('spawn_persons'))
         self.spawn_vehicles = int(self.get_property('spawn_vehicles'))
         self.enable_weather = self.get_property('enable_weather')
@@ -56,9 +48,20 @@ class CARLABlock:
         self.vehicles_ = ['vehicle.audi.a2', 'vehicle.audi.etron', 'vehicle.audi.tt', 'vehicle.bh.crossbike', 'vehicle.bmw.grandtourer', 'vehicle.bmw.isetta', 'vehicle.carlamotors.carlacola', 'vehicle.chevrolet.impala', 'vehicle.citroen.c3', 'vehicle.diamondback.century', 'vehicle.dodge_charger.police', 'vehicle.gazelle.omafiets', 'vehicle.harley-davidson.low_rider',
                           'vehicle.jeep.wrangler_rubicon', 'vehicle.kawasaki.ninja', 'vehicle.lincoln.mkz2017', 'vehicle.mercedes-benz.coupe', 'vehicle.mini.cooperst', 'vehicle.mustang.mustang', 'vehicle.nissan.micra', 'vehicle.nissan.patrol', 'vehicle.seat.leon', 'vehicle.tesla.cybertruck', 'vehicle.tesla.model3', 'vehicle.toyota.prius', 'vehicle.volkswagen.t2', 'vehicle.yamaha.yzf']
         self.ego_vehicle = self.vehicles_[self.get_property('ego_vehicle')]
+        self.weather_presets = [carla.WeatherParameters.ClearNoon, carla.WeatherParameters.CloudyNoon, carla.WeatherParameters.WetNoon, carla.WeatherParameters.WetCloudyNoon, carla.WeatherParameters.SoftRainNoon, carla.WeatherParameters.MidRainyNoon, carla.WeatherParameters.HardRainNoon,
+                                carla.WeatherParameters.ClearSunset, carla.WeatherParameters.CloudySunset, carla.WeatherParameters.WetSunset, carla.WeatherParameters.WetCloudySunset, carla.WeatherParameters.SoftRainSunset, carla.WeatherParameters.MidRainSunset, carla.WeatherParameters.HardRainSunset]
+        # Now we will run carla as a server by the user carla, as carla only runs by non-root user
+        # we will use opengl not vulkan for headless mode an pass the selected town as an argument to carla
+        time.sleep(5)
+        self.pro = subprocess.Popen(
+            "runuser -l carla -c 'SDL_VIDEODRIVER=offscreen sh /opt/carla-simulator/bin/CarlaUE4.sh {} -opengl -carla-server'".format(self.selected_town), shell=True)
+        self.alert("Starting CARLA", "INFO")
         time.sleep(10)  # give CARLA server time to start
 
     def run(self):
+        """This function will be called after on_start returns, all the magic happens here, we will create Carla client
+        and add all the sensors, and actors we need
+        """
         actor_list = []
         client = carla.Client('localhost', 2000)
         client.set_timeout(2.0)
@@ -145,13 +148,14 @@ class CARLABlock:
         # Let's add now a "gnss" attached to the vehicle. Note that the
         # transform we give here is now relative to the vehicle.
         gnss_bp = blueprint_library.find('sensor.other.gnss')
-
         gnss_transform = carla.Transform(carla.Location(x=0, z=2.4))
         gnss = world.spawn_actor(
             gnss_bp, gnss_transform, attach_to=self.vehicle)
         actor_list.append(gnss)
         print('created %s' % gnss.type_id)
         gnss.listen(self.gnss_sensor_data_updated)
+
+        # Here we will use some examples script provided by CARLA to spawn actors and change weather
         if(self.spawn_persons > 0 or self.spawn_vehicles > 0):
             print("spawning vehicles and walkers")
             os.system(
@@ -160,26 +164,35 @@ class CARLABlock:
             print("Enabling Dynamic weather")
             os.system(
                 "cd /opt/carla-simulator/PythonAPI/examples && python3 dynamic_weather.py --speed {} &".format(self.weather_r))
+        else:
+            weather = self.weather_presets[self.get_property('weather_pre')]
+            world.set_weather(weather)
 
         print("SLeeping")
         time.sleep(15000000)
 
     def publish_bgr_image(self, image):
+        """callback function to rgb camera sensor
+        it converts the image to ROS image in BGR8 encoding
+        """
         carla_image_data_array = np.ndarray(
             shape=(image.height, image.width, 4),
             dtype=np.uint8, buffer=image.raw_data)
         header = Header()
+        set_timestamp(header, image.timestamp)
         img_msg = from_ndarray(carla_image_data_array[:, :, :3], header)
-        # img_msg = self.cv_bridge.cv2_to_imgmsg(
-        #     carla_image_data_array[:, :, 3], encoding="bgr8")
         self.publish("image", img_msg)
 
     def publish_semantic_seg(self, carla_image):
+        """callback function to semantic segmentation camera sensor
+        it converts the image to ROS image in BGR8 encoding
+        """
         carla_image.convert(carla.ColorConverter.CityScapesPalette)
         carla_image_data_array = np.ndarray(
             shape=(carla_image.height, carla_image.width, 4),
             dtype=np.uint8, buffer=carla_image.raw_data)
         header = Header()
+        set_timestamp(header, carla_image.timestamp)
         img_msg = from_ndarray(carla_image_data_array[:, :, :3], header)
         self.publish("image_seg", img_msg)
 
@@ -190,6 +203,7 @@ class CARLABlock:
         :type carla_lidar_measurement: carla.LidarMeasurement
         """
         header = Header()
+        set_timestamp(header, carla_lidar_measurement.timestamp)
         header.frame_id = "lidar"
         fields = [
             PointField('x', 0, PointField.FLOAT32, 1),
@@ -212,6 +226,7 @@ class CARLABlock:
         :type carla_gnss_measurement: carla.GnssMeasurement
         """
         navsatfix_msg = NavSatFix()
+        set_timestamp(navsatfix_msg.header, carla_gnss_measurement.timestamp)
         navsatfix_msg.latitude = carla_gnss_measurement.latitude
         navsatfix_msg.longitude = carla_gnss_measurement.longitude
         navsatfix_msg.altitude = carla_gnss_measurement.altitude
