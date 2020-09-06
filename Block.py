@@ -19,8 +19,9 @@ from yonoarc_utils.image import to_ndarray, from_ndarray
 from yonoarc_utils.header import set_timestamp, get_timestamp
 from std_msgs.msg import Header
 from sensor_msgs.point_cloud2 import create_cloud
-from sensor_msgs.msg import PointField
-from sensor_msgs.msg import NavSatFix
+from sensor_msgs.msg import PointField, NavSatFix, Imu
+from carla_msgs.msg import CarlaRadarMeasurement, CarlaRadarDetection
+import transforms as trans
 
 
 class CARLABlock:
@@ -29,7 +30,6 @@ class CARLABlock:
         we create a carla user and retrive some block's properties to configure the simulation
         like towns, weather, ego vehicle ... etc.
         """
-        self.alert("Creating carla user and running ssh.....", "INFO")
         # username and password for ssh
         os.environ["USERNAME"] = "carla"
         os.environ["PASSWORD"] = "carla"
@@ -57,6 +57,12 @@ class CARLABlock:
             self.selected_quality_), "INFO")
         # Now we will run carla as a server by the user carla, as carla only runs by non-root user
         # we will use opengl not vulkan for headless mode an pass the selected town as an argument to carla
+        self._enable_lidar = self.get_property('e_lidar')
+        self._enable_rgb_cam = self.get_property('e_rgb_cam')
+        self._enable_gnss = self.get_property('e_gnss')
+        self._enable_semantic = self.get_property('e_semantic')
+        self._enable_imu = self.get_property('e_imu')
+        self._enable_radar = self.get_property('e_radar')
         time.sleep(5)
         self.pro = subprocess.Popen(
             "runuser -l carla -c 'SDL_VIDEODRIVER=offscreen sh /opt/carla-simulator/bin/CarlaUE4.sh {} -quality-level={} -opengl -carla-server'".format(self.selected_town, self.selected_quality_), shell=True)
@@ -110,63 +116,88 @@ class CARLABlock:
         # For that reason, we are storing all the actors we create so we can
         # destroy them afterwards.
         actor_list.append(self.vehicle)
-        print('created %s' % self.vehicle.type_id)
+        self.alert("Ego vehicle spawned", "INFO")
         if self.autopilot_:
             # Let's put the vehicle to drive around.
             self.vehicle.set_autopilot(True)
 
-        # Let's add now a "rgb" camera attached to the vehicle. Note that the
-        # transform we give here is now relative to the vehicle.
-        camera_bp = blueprint_library.find('sensor.camera.rgb')
-        camera_transform = carla.Transform(
-            carla.Location(x=1.5, z=2.4))
-        camera = world.spawn_actor(
-            camera_bp, camera_transform, attach_to=self.vehicle)
-        actor_list.append(camera)
-        print('created %s' % camera.type_id)
-        camera.listen(self._publish_bgr_image)
         # Create Bird-Eye view camera of the simulation
+        camera_bp = blueprint_library.find('sensor.camera.rgb')
         camera_transform_bird_eye = carla.Transform(
             carla.Location(x=0, z=10), carla.Rotation(pitch=-90))
         camera_bird_eye = world.spawn_actor(
             camera_bp, camera_transform_bird_eye, attach_to=self.vehicle)
         actor_list.append(camera_bird_eye)
-        print('created %s' % camera_bird_eye.type_id)
         camera_bird_eye.listen(self.__bird_eye_image)
-        # Let's add now a "semantic" camera attached to the vehicle. Note that the
-        # transform we give here is now relative to the vehicle.
-        camera_ss_bp = blueprint_library.find(
-            'sensor.camera.semantic_segmentation')
-        camera_ss = world.spawn_actor(
-            camera_ss_bp, camera_transform, attach_to=self.vehicle)
-        actor_list.append(camera_ss)
-        print('created %s' % camera_ss.type_id)
-        camera_ss.listen(self._publish_semantic_seg)
 
-        # Let's add now a "lidar" attached to the vehicle. Note that the
-        # transform we give here is now relative to the vehicle.
-        lidar_bp = blueprint_library.find('sensor.lidar.ray_cast')
-        lidar_bp.set_attribute('range', '50')
-        lidar_bp.set_attribute('points_per_second', '320000')
-        lidar_bp.set_attribute("upper_fov", "2.0")
-        lidar_bp.set_attribute("lower_fov", "-26.8")
-        lidar_bp.set_attribute("rotation_frequency", "20")
-        lidar_transform = carla.Transform(carla.Location(x=0, z=2.4))
-        lidar = world.spawn_actor(
-            lidar_bp, lidar_transform, attach_to=self.vehicle)
-        actor_list.append(lidar)
-        print('created %s' % lidar.type_id)
-        lidar.listen(self._publish_pointcloud)
+        if self._enable_rgb_cam:
+            # Let's add now a "rgb" camera attached to the vehicle. Note that the
+            # transform we give here is now relative to the vehicle.
+            camera_transform = carla.Transform(
+                carla.Location(x=1.5, z=2.4))
+            camera = world.spawn_actor(
+                camera_bp, camera_transform, attach_to=self.vehicle)
+            actor_list.append(camera)
+            self.alert("RGB camera sensor Activated", "INFO")
+            camera.listen(self._publish_bgr_image)
 
-        # Let's add now a "gnss" attached to the vehicle. Note that the
-        # transform we give here is now relative to the vehicle.
-        gnss_bp = blueprint_library.find('sensor.other.gnss')
-        gnss_transform = carla.Transform(carla.Location(x=0, z=2.4))
-        gnss = world.spawn_actor(
-            gnss_bp, gnss_transform, attach_to=self.vehicle)
-        actor_list.append(gnss)
-        print('created %s' % gnss.type_id)
-        gnss.listen(self._publish_gnss)
+        if self._enable_semantic:
+            # Let's add now a "semantic" camera attached to the vehicle. Note that the
+            # transform we give here is now relative to the vehicle.
+            camera_ss_bp = blueprint_library.find(
+                'sensor.camera.semantic_segmentation')
+            camera_ss = world.spawn_actor(
+                camera_ss_bp, camera_transform, attach_to=self.vehicle)
+            actor_list.append(camera_ss)
+            self.alert("Semantic Segmentation Activated", "INFO")
+            camera_ss.listen(self._publish_semantic_seg)
+
+        if self._enable_lidar:
+            # Let's add now a "lidar" attached to the vehicle. Note that the
+            # transform we give here is now relative to the vehicle.
+            lidar_bp = blueprint_library.find('sensor.lidar.ray_cast')
+            lidar_bp.set_attribute('range', '50')
+            lidar_bp.set_attribute('points_per_second', '320000')
+            lidar_bp.set_attribute("upper_fov", "2.0")
+            lidar_bp.set_attribute("lower_fov", "-26.8")
+            lidar_bp.set_attribute("rotation_frequency", "20")
+            lidar_transform = carla.Transform(carla.Location(x=0, z=2.4))
+            lidar = world.spawn_actor(
+                lidar_bp, lidar_transform, attach_to=self.vehicle)
+            actor_list.append(lidar)
+            self.alert("Lidar Sensor Activated", "INFO")
+            lidar.listen(self._publish_pointcloud)
+
+        if self._enable_gnss:
+            gnss_bp = blueprint_library.find('sensor.other.gnss')
+            gnss_transform = carla.Transform(carla.Location(x=0, z=2.4))
+            gnss = world.spawn_actor(
+                gnss_bp, gnss_transform, attach_to=self.vehicle)
+            actor_list.append(gnss)
+            self.alert("GNSS Sensor Activated", "INFO")
+            gnss.listen(self._publish_gnss)
+
+        if self._enable_radar:
+            radar_bp = blueprint_library.find('sensor.other.radar')
+            radar_transform = carla.Transform(carla.Location(x=2, z=1.5))
+            radar_bp.set_attribute('range', '100')
+            radar_bp.set_attribute('points_per_second', '1500')
+            radar_bp.set_attribute("horizontal_fov", "30.0")
+            radar_bp.set_attribute("vertical_fov", "10.0")
+            radar = world.spawn_actor(
+                radar_bp, radar_transform, attach_to=self.vehicle)
+            actor_list.append(radar)
+            self.alert("Radar Sensor Activated", "INFO")
+            radar.listen(self._publish_radar)
+
+        if self._enable_imu:
+            imu_bp = blueprint_library.find('sensor.other.imu')
+            imu_transform = carla.Transform(carla.Location(x=2, z=2))
+            imu = world.spawn_actor(
+                imu_bp, imu_transform, attach_to=self.vehicle)
+            actor_list.append(imu)
+            self.alert("IMU Sensor Activated", "INFO")
+            imu.listen(self._publish_imu)
 
         # Here we will use some examples script provided by CARLA to spawn actors and change weather
         if(self.spawn_persons > 0 or self.spawn_vehicles > 0):
@@ -220,7 +251,7 @@ class CARLABlock:
         """
         header = Header()
         set_timestamp(header, carla_lidar_measurement.timestamp)
-        header.frame_id = "lidar"
+        header.frame_id = "ego_vehicle"
         fields = [
             PointField('x', 0, PointField.FLOAT32, 1),
             PointField('y', 4, PointField.FLOAT32, 1),
@@ -247,6 +278,49 @@ class CARLABlock:
         navsatfix_msg.longitude = carla_gnss_measurement.longitude
         navsatfix_msg.altitude = carla_gnss_measurement.altitude
         self.publish("fix", navsatfix_msg)
+
+    def _publish_radar(self, carla_radar_measurement):
+        """
+        Function to transform the a received Radar measurement into a ROS message
+        :param carla_radar_measurement: carla Radar measurement object
+        :type carla_radar_measurement: carla.RadarMeasurement
+        """
+        radar_msg = CarlaRadarMeasurement()
+        set_timestamp(radar_msg.header, carla_radar_measurement.timestamp)
+        for detection in carla_radar_measurement:
+            radar_detection = CarlaRadarDetection()
+            radar_detection.altitude = detection.altitude
+            radar_detection.azimuth = detection.azimuth
+            radar_detection.depth = detection.depth
+            radar_detection.velocity = detection.velocity
+            radar_msg.detections.append(radar_detection)
+        self.publish("radar", radar_msg)
+
+    def _publish_imu(self, carla_imu_measurement):
+        """
+        Function to transform a received imu measurement into a ROS Imu message
+        :param carla_imu_measurement: carla imu measurement object
+        :type carla_imu_measurement: carla.IMUMeasurement
+        """
+        imu_msg = Imu()
+        imu_msg.header.frame_id = "ego_vehicle"
+        set_timestamp(imu_msg.header, carla_imu_measurement.timestamp)
+        # Carla uses a left-handed coordinate convention (X forward, Y right, Z up).
+        # Here, these measurements are converted to the right-handed ROS convention
+        #  (X forward, Y left, Z up).
+        imu_msg.angular_velocity.x = -carla_imu_measurement.gyroscope.x
+        imu_msg.angular_velocity.y = carla_imu_measurement.gyroscope.y
+        imu_msg.angular_velocity.z = -carla_imu_measurement.gyroscope.z
+
+        imu_msg.linear_acceleration.x = carla_imu_measurement.accelerometer.x
+        imu_msg.linear_acceleration.y = -carla_imu_measurement.accelerometer.y
+        imu_msg.linear_acceleration.z = carla_imu_measurement.accelerometer.z
+
+        imu_rotation = carla_imu_measurement.transform.rotation
+
+        quat = trans.carla_rotation_to_numpy_quaternion(imu_rotation)
+        imu_msg.orientation = trans.numpy_quaternion_to_ros_quaternion(quat)
+        self.publish("imu", imu_msg)
 
     def on_new_messages(self, messages):
         ''' [Optional] Called according to the execution mode of the block.
