@@ -20,7 +20,7 @@ from yonoarc_utils.header import set_timestamp, get_timestamp
 from std_msgs.msg import Header
 from sensor_msgs.point_cloud2 import create_cloud
 from sensor_msgs.msg import PointField, NavSatFix, Imu
-from carla_msgs.msg import CarlaRadarMeasurement, CarlaRadarDetection
+from carla_msgs.msg import CarlaRadarMeasurement, CarlaRadarDetection, CarlaCollisionEvent, CarlaLaneInvasionEvent
 import transforms as trans
 
 
@@ -55,15 +55,17 @@ class CARLABlock:
             self.get_property('quality_level')]
         self.alert("Quality Level is: {}".format(
             self.selected_quality_), "INFO")
-        # Now we will run carla as a server by the user carla, as carla only runs by non-root user
-        # we will use opengl not vulkan for headless mode an pass the selected town as an argument to carla
         self._enable_lidar = self.get_property('e_lidar')
         self._enable_rgb_cam = self.get_property('e_rgb_cam')
         self._enable_gnss = self.get_property('e_gnss')
         self._enable_semantic = self.get_property('e_semantic')
         self._enable_imu = self.get_property('e_imu')
         self._enable_radar = self.get_property('e_radar')
+        self._enable_collision = self.get_property('e_collision')
+        self._enable_lanes_inv = self.get_property('e_lanes_inv')
         time.sleep(5)
+        # Now we will run carla as a server by the user carla, as carla only runs by non-root user
+        # we will use opengl not vulkan for headless mode an pass the selected town as an argument to carla
         self.pro = subprocess.Popen(
             "runuser -l carla -c 'SDL_VIDEODRIVER=offscreen sh /opt/carla-simulator/bin/CarlaUE4.sh {} -quality-level={} -opengl -carla-server'".format(self.selected_town, self.selected_quality_), shell=True)
         self.alert("Starting CARLA", "INFO")
@@ -199,6 +201,24 @@ class CARLABlock:
             self.alert("IMU Sensor Activated", "INFO")
             imu.listen(self._publish_imu)
 
+        if self._enable_collision:
+            collision_bp = blueprint_library.find('sensor.other.collision')
+            collision_transform = carla.Transform(carla.Location(x=0, z=0))
+            collision = world.spawn_actor(
+                collision_bp, collision_transform, attach_to=self.vehicle)
+            actor_list.append(collision)
+            self.alert("Collision Sensor Activated", "INFO")
+            collision.listen(self._publish_collision)
+
+        if self._enable_lanes_inv:
+            lane_bp = blueprint_library.find('sensor.other.lane_invasion')
+            lane_transform = carla.Transform(carla.Location(x=0, z=0))
+            lane_inv = world.spawn_actor(
+                lane_bp, lane_transform, attach_to=self.vehicle)
+            actor_list.append(lane_inv)
+            self.alert("Lanes invasion Sensor Activated", "INFO")
+            lane_inv.listen(self._publish_lane_inv)
+
         # Here we will use some examples script provided by CARLA to spawn actors and change weather
         if(self.spawn_persons > 0 or self.spawn_vehicles > 0):
             print("spawning vehicles and walkers")
@@ -321,6 +341,34 @@ class CARLABlock:
         quat = trans.carla_rotation_to_numpy_quaternion(imu_rotation)
         imu_msg.orientation = trans.numpy_quaternion_to_ros_quaternion(quat)
         self.publish("imu", imu_msg)
+
+    def _publish_collision(self, collision_event):
+        """
+        Function to wrap the collision event into a ros messsage
+        :param collision_event: carla collision event object
+        :type collision_event: carla.CollisionEvent
+        """
+        collision_msg = CarlaCollisionEvent()
+        collision_msg.header.frame_id = "ego_vehicle"
+        set_timestamp(collision_msg.header, collision_event.timestamp)
+        collision_msg.other_actor_id = collision_event.other_actor.id
+        collision_msg.normal_impulse.x = collision_event.normal_impulse.x
+        collision_msg.normal_impulse.y = collision_event.normal_impulse.y
+        collision_msg.normal_impulse.z = collision_event.normal_impulse.z
+        self.publish("collision", collision_msg)
+
+    def _publish_lane_inv(self, lane_invasion_event):
+        """
+        Function to wrap the lane invasion event into a ros messsage
+        :param lane_invasion_event: carla lane invasion event object
+        :type lane_invasion_event: carla.LaneInvasionEvent
+        """
+        lane_invasion_msg = CarlaLaneInvasionEvent()
+        lane_invasion_msg.header.frame_id = "ego_vehicle"
+        set_timestamp(lane_invasion_msg.header, lane_invasion_event.timestamp)
+        for marking in lane_invasion_event.crossed_lane_markings:
+            lane_invasion_msg.crossed_lane_markings.append(marking.type)
+        self.publish("lanes_invasion", lane_invasion_msg)
 
     def on_new_messages(self, messages):
         ''' [Optional] Called according to the execution mode of the block.
