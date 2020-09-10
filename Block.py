@@ -241,7 +241,7 @@ class CARLABlock:
         print("SLeeping")
         time.sleep(15000000)
 
-    def _publish_bgr_image(self, image, port_key="image"):
+    def _publish_bgr_image(self, image, port_key="rgb_camera"):
         """callback function to rgb camera sensor
         it converts the image to ROS image in BGR8 encoding
         """
@@ -251,12 +251,18 @@ class CARLABlock:
         header = Header()
         set_timestamp(header, image.timestamp)
         img_msg = from_ndarray(carla_image_data_array[:, :, :3], header)
-        self.publish(port_key, img_msg)
+        self.publish(port_key+"/image_raw", img_msg)
         self._camera_info.header = header
-        self.publish("camera_info", self._camera_info)
+        self.publish(port_key+"/camera_info", self._camera_info)
 
-    def __bird_eye_image(self, carla_image):
-        self._publish_bgr_image(carla_image, port_key="bird_eye")
+    def __bird_eye_image(self, image):
+        carla_image_data_array = np.ndarray(
+            shape=(image.height, image.width, 4),
+            dtype=np.uint8, buffer=image.raw_data)
+        header = Header()
+        set_timestamp(header, image.timestamp)
+        img_msg = from_ndarray(carla_image_data_array[:, :, :3], header)
+        self.publish("bird_eye", img_msg)
 
     def _publish_semantic_seg(self, carla_image):
         """callback function to semantic segmentation camera sensor
