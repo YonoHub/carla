@@ -3,6 +3,7 @@ import os
 import time
 import glob
 import sys
+import math
 try:
     sys.path.append(glob.glob('/opt/carla-simulator/PythonAPI/carla/dist/carla-*%d.%d-%s.egg' % (
         sys.version_info.major,
@@ -19,7 +20,7 @@ from yonoarc_utils.image import to_ndarray, from_ndarray
 from yonoarc_utils.header import set_timestamp, get_timestamp
 from std_msgs.msg import Header
 from sensor_msgs.point_cloud2 import create_cloud
-from sensor_msgs.msg import PointField, NavSatFix, Imu
+from sensor_msgs.msg import PointField, NavSatFix, Imu, CameraInfo
 from carla_msgs.msg import CarlaRadarMeasurement, CarlaRadarDetection, CarlaCollisionEvent, CarlaLaneInvasionEvent
 import transforms as trans
 
@@ -63,6 +64,10 @@ class CARLABlock:
         self._enable_radar = self.get_property('e_radar')
         self._enable_collision = self.get_property('e_collision')
         self._enable_lanes_inv = self.get_property('e_lanes_inv')
+        self._lidar_frame = self.get_property('lidar_frame')
+        self._imu_frame = self.get_property('imu_frame')
+        self._gnss_frame = self.get_property('gnss_frame')
+        self._radar_frame = self.get_property('radar_frame')
         time.sleep(5)
         # Now we will run carla as a server by the user carla, as carla only runs by non-root user
         # we will use opengl not vulkan for headless mode an pass the selected town as an argument to carla
@@ -142,6 +147,7 @@ class CARLABlock:
             actor_list.append(camera)
             self.alert("RGB camera sensor Activated", "INFO")
             camera.listen(self._publish_bgr_image)
+            self._build_camera_info(camera)
 
         if self._enable_semantic:
             # Let's add now a "semantic" camera attached to the vehicle. Note that the
@@ -246,6 +252,8 @@ class CARLABlock:
         set_timestamp(header, image.timestamp)
         img_msg = from_ndarray(carla_image_data_array[:, :, :3], header)
         self.publish(port_key, img_msg)
+        self._camera_info.header = header
+        self.publish("camera_info", self._camera_info)
 
     def __bird_eye_image(self, carla_image):
         self._publish_bgr_image(carla_image, port_key="bird_eye")
@@ -271,7 +279,7 @@ class CARLABlock:
         """
         header = Header()
         set_timestamp(header, carla_lidar_measurement.timestamp)
-        header.frame_id = "ego_vehicle"
+        header.frame_id = self._lidar_frame
         fields = [
             PointField('x', 0, PointField.FLOAT32, 1),
             PointField('y', 4, PointField.FLOAT32, 1),
@@ -294,6 +302,7 @@ class CARLABlock:
         """
         navsatfix_msg = NavSatFix()
         set_timestamp(navsatfix_msg.header, carla_gnss_measurement.timestamp)
+        navsatfix_msg.header.frame_id = self._gnss_frame
         navsatfix_msg.latitude = carla_gnss_measurement.latitude
         navsatfix_msg.longitude = carla_gnss_measurement.longitude
         navsatfix_msg.altitude = carla_gnss_measurement.altitude
@@ -307,6 +316,7 @@ class CARLABlock:
         """
         radar_msg = CarlaRadarMeasurement()
         set_timestamp(radar_msg.header, carla_radar_measurement.timestamp)
+        radar_msg.header.frame_id = self._radar_frame
         for detection in carla_radar_measurement:
             radar_detection = CarlaRadarDetection()
             radar_detection.altitude = detection.altitude
@@ -323,7 +333,7 @@ class CARLABlock:
         :type carla_imu_measurement: carla.IMUMeasurement
         """
         imu_msg = Imu()
-        imu_msg.header.frame_id = "ego_vehicle"
+        imu_msg.header.frame_id = self._imu_frame
         set_timestamp(imu_msg.header, carla_imu_measurement.timestamp)
         # Carla uses a left-handed coordinate convention (X forward, Y right, Z up).
         # Here, these measurements are converted to the right-handed ROS convention
@@ -369,6 +379,28 @@ class CARLABlock:
         for marking in lane_invasion_event.crossed_lane_markings:
             lane_invasion_msg.crossed_lane_markings.append(marking.type)
         self.publish("lanes_invasion", lane_invasion_msg)
+
+    def _build_camera_info(self, carla_actor):
+        """
+        Private function to compute camera info
+        camera info doesn't change over time
+        """
+        camera_info = CameraInfo()
+        # store info without header
+        camera_info.header = None
+        camera_info.width = int(carla_actor.attributes['image_size_x'])
+        camera_info.height = int(carla_actor.attributes['image_size_y'])
+        camera_info.distortion_model = 'plumb_bob'
+        cx = camera_info.width / 2.0
+        cy = camera_info.height / 2.0
+        fx = camera_info.width / (
+            2.0 * math.tan(float(carla_actor.attributes['fov']) * math.pi / 360.0))
+        fy = fx
+        camera_info.K = [fx, 0, cx, 0, fy, cy, 0, 0, 1]
+        camera_info.D = [0, 0, 0, 0, 0]
+        camera_info.R = [1.0, 0, 0, 0, 1.0, 0, 0, 0, 1.0]
+        camera_info.P = [fx, 0, cx, 0, 0, fy, cy, 0, 0, 0, 1.0, 0]
+        self._camera_info = camera_info
 
     def on_new_messages(self, messages):
         ''' [Optional] Called according to the execution mode of the block.
