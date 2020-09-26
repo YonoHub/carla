@@ -133,7 +133,7 @@ class CARLABlock:
         # Now we will run carla as a server by the user carla, as carla only runs by non-root user
         # we will use opengl not vulkan for headless mode an pass the selected town as an argument to carla
         self.pro = subprocess.Popen(
-            "runuser -l carla -c 'SDL_VIDEODRIVER=offscreen sh /opt/carla-simulator/bin/CarlaUE4.sh {} -quality-level={} -opengl -carla-server'".format(
+            "runuser -l carla -c 'SDL_VIDEODRIVER=offscreen sh /opt/carla-simulator/CarlaUE4.sh {} -quality-level={} -opengl -carla-server'".format(
                 self.selected_town, self.selected_quality_
             ),
             shell=True,
