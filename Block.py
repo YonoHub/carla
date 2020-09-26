@@ -363,14 +363,12 @@ class CARLABlock:
             PointField("x", 0, PointField.FLOAT32, 1),
             PointField("y", 4, PointField.FLOAT32, 1),
             PointField("z", 8, PointField.FLOAT32, 1),
+            PointField("intensity", 12, PointField.FLOAT32, 1),
         ]
 
-        lidar_data = (
-            np.frombuffer(carla_lidar_measurement.raw_data, dtype=np.float32)
-            .reshape([-1, 3])
-            .copy()
-        )  # Original data are read only
-        # we take the opposite of y axis
+        lidar_data = np.fromstring(carla_lidar_measurement.raw_data, dtype=np.float32)
+        lidar_data = np.reshape(lidar_data, (int(lidar_data.shape[0] / 4), 4))
+        # we take the oposite of y axis
         # (as lidar point are express in left handed coordinate system, and ros need right handed)
         lidar_data[:, 1] *= -1
         point_cloud_msg = create_cloud(header, fields, lidar_data)
