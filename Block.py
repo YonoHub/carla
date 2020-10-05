@@ -62,6 +62,8 @@ class CARLABlock:
             "Town10HD",
         ]
         self.selected_town = self.carla_towns[self.get_property("towns")]
+        self.osm_file = self.get_property("osm")
+        self.xodr_file = self.get_property("xodr")
         self.alert("Selected Town is {}".format(self.selected_town), "INFO")
         self.spawn_persons = int(self.get_property("spawn_persons"))
         self.spawn_vehicles = int(self.get_property("spawn_vehicles"))
@@ -140,6 +142,7 @@ class CARLABlock:
         )
         self.alert("Starting CARLA", "INFO")
         time.sleep(10)  # give CARLA server time to start
+        self.load_osm_oxdr()  # load osm or xodr if available
 
     def run(self):
         """This function will be called after on_start returns, all the magic happens here, we will create Carla client
@@ -482,6 +485,24 @@ class CARLABlock:
         camera_info.R = [1.0, 0, 0, 0, 1.0, 0, 0, 0, 1.0]
         camera_info.P = [fx, 0, cx, 0, 0, fy, cy, 0, 0, 0, 1.0, 0]
         self._camera_info = camera_info
+
+    def load_osm_oxdr(self):
+        if os.path.exists(self.osm_file):
+            self.alert("Loading OSM file", "INFO")
+            print("OSMM PATH: {}".format(self.osm_file))
+            os.system(
+                "cd /opt/carla-simulator/PythonAPI/util && python3 config.py --osm-path {}".format(
+                    self.osm_file
+                )
+            )
+        elif os.path.exists(self.xodr_file):
+            self.alert("Loading XODR file", "INFO")
+            print("XODR File: {} ".format(self.xodr_file))
+            os.system(
+                "cd /opt/carla-simulator/PythonAPI/util && python3 config.py -x {}".format(
+                    self.xodr_file
+                )
+            )
 
     def on_new_messages(self, messages):
         """ [Optional] Called according to the execution mode of the block.
