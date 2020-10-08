@@ -46,6 +46,7 @@ class CARLABlock:
         # username and password for ssh
         os.environ["USERNAME"] = "carla"
         os.environ["PASSWORD"] = "carla"
+        os.environ["SUMO_HOME"] = "/usr/share/sumo"
         # Run the ssh-server
         os.system(
             "(mkdir /home/$USERNAME && useradd $USERNAME && echo $USERNAME:$PASSWORD | chpasswd && usermod -aG sudo $USERNAME && chown carla:carla /home/carla && usermod -d /home/carla carla && mkdir /var/run/sshd && /usr/sbin/sshd) & (rm -f /tmp/.X1-lock; sh /usr/local/bin/start_desktop.sh) &"
@@ -67,6 +68,7 @@ class CARLABlock:
         self.alert("Selected Town is {}".format(self.selected_town), "INFO")
         self.spawn_persons = int(self.get_property("spawn_persons"))
         self.spawn_vehicles = int(self.get_property("spawn_vehicles"))
+        self.spawn_sumo = self.get_property("sumo_spawn")
         self.enable_weather = self.get_property("enable_weather")
         self.weather_r = self.get_property("weather_r")
         self.autopilot_ = self.get_property("autopilot")
@@ -295,12 +297,24 @@ class CARLABlock:
 
         # Here we will use some examples script provided by CARLA to spawn actors and change weather
         if self.spawn_persons > 0 or self.spawn_vehicles > 0:
-            print("spawning vehicles and walkers")
-            os.system(
-                "cd /opt/carla-simulator/PythonAPI/examples && python3 spawn_npc.py -n {} -w {} &".format(
-                    self.spawn_vehicles, self.spawn_persons
+            if self.spawn_sumo:
+                self.alert("Spawning vehicles using SUMO", "INFO")
+                os.system(
+                    "cd /opt/carla-simulator/Co-Simulation/Sumo && DISPLAY=:1.0 python3 spawn_npc_sumo.py -n {} --tls-manager carla --sync-vehicle-all --sumo-gui &".format(
+                        self.spawn_vehicles
+                    )
                 )
-            )
+                os.system(
+                    "cd /opt/carla-simulator/PythonAPI/examples && python3 spawn_npc.py -w {} &".format(
+                        self.spawn_persons
+                    )
+                )
+            else:
+                os.system(
+                    "cd /opt/carla-simulator/PythonAPI/examples && python3 spawn_npc.py -n {} -w {} &".format(
+                        self.spawn_vehicles, self.spawn_persons
+                    )
+                )
         if self.enable_weather:
             print("Enabling Dynamic weather")
             os.system(
