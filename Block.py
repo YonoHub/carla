@@ -369,8 +369,11 @@ class CARLABlock:
             PointField("intensity", 12, PointField.FLOAT32, 1),
         ]
 
-        lidar_data = np.fromstring(carla_lidar_measurement.raw_data, dtype=np.float32)
-        lidar_data = np.reshape(lidar_data, (int(lidar_data.shape[0] / 4), 4))
+        lidar_data = (
+            np.frombuffer(carla_lidar_measurement.raw_data, dtype=np.float32)
+            .reshape([-1, 4])
+            .copy()
+        )
         # we take the oposite of y axis
         # (as lidar point are express in left handed coordinate system, and ros need right handed)
         lidar_data[:, 1] *= -1
